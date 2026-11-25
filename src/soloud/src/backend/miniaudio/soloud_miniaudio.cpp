@@ -1788,7 +1788,40 @@ namespace SoLoud
                         double streamSampleRate = (gDevice.playback.internalSampleRate > 0)
                             ? (double)gDevice.playback.internalSampleRate
                             : (double)gDevice.sampleRate;
-                        double latencySec = ((double)(framesWritten - framePosition) / streamSampleRate) -
+                        // Some AAudio implementations report a timestamp
+                        // framePosition that does not advance at the stream rate
+                        // (observed on a Samsung SM-G991N, Android 15: a 44.1 kHz
+                        // stream whose framePosition advanced ~0.912x as fast as
+                        // framesWritten). Subtracting the two counters directly then
+                        // drifts by ~88 ms per second of playback. Measure the
+                        // position rate from the timestamps of this stream and
+                        // convert each counter to seconds with its own rate.
+                        static void *s_rateStream = nullptr;
+                        static int64_t s_anchorPos = -1;
+                        static int64_t s_anchorNs = 0;
+                        static double s_posRate = 0.0;
+                        if (s_rateStream != (void *)gDevice.aaudio.pStreamPlayback)
+                        {
+                            s_rateStream = (void *)gDevice.aaudio.pStreamPlayback;
+                            s_anchorPos = -1;
+                            s_posRate = 0.0;
+                        }
+                        if (s_anchorPos < 0)
+                        {
+                            s_anchorPos = framePosition;
+                            s_anchorNs = timeNanos;
+                        }
+                        else if (timeNanos - s_anchorNs >= 1000000000LL &&
+                                 framePosition > s_anchorPos)
+                        {
+                            s_posRate = (double)(framePosition - s_anchorPos) /
+                                        ((double)(timeNanos - s_anchorNs) / 1000000000.0);
+                        }
+                        // Warming up: the position rate is not known yet.
+                        if (s_posRate <= 0.0)
+                            return 0.0;
+                        double latencySec = ((double)framesWritten / streamSampleRate) -
+                                            ((double)framePosition / s_posRate) -
                                             ((double)(nowNanos - timeNanos) / 1000000000.0);
                         if (latencySec > 0.0)
                             return latencySec;
